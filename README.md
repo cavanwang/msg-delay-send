@@ -424,8 +424,8 @@ table `message` already exists, skip
 2024/09/24 20:49:38.680 [I] [D:/go_src/src/github.com/cavanwang/msg-delay-send/cmd/consumer/main.go:97]  consumer exited
 root@node3:~/testme# 
 </pre>
-## This project's architecture design
-生产者:</br>
+## 2、This project's architecture design
+### 2.1 生产者
 <pre>
   1、启动时初始化若干的kafka生产者sender（基于github.com/IBM/sarama），初始化之后n个sender已经与kafka建立了同步的会话连接（意味着随后就可以发送消息了）。</br>
   2、启动一个生产者主循环(Produce函数内的for ...)，每次去DB中扫描一些campaign活动表中是否有已经到达调度时间(schedule_time <= time.Now())的活动, 没有就睡眠n秒继续重复。否则就准备启动n个协程，每个协程负责一个活动的发送。我们称这个协程为s协程</br>
@@ -434,7 +434,7 @@ root@node3:~/testme#
   5、全部s协程都处理完消息发送后，会统一WaitGroup.Wait()，然后重复第2步的扫描到达调度时间的活动记录。</br>
   6、这里没有在发送完一条消息时写入message表一个记录，是想减少DB写操作。当然，极端情况如果一个活动的对应的n条消息有一条发送kafka失败，整个活动下一轮还会重新扫描到。但是这里也加了一个预防措施，就是读取消费端生成的message表，也能一定程度上避免n条消息全部重发。</br>
   </pre>
-  消费者:
+  ### 2.2 消费者:
   <pre>
   1、启动后启动多个goroutine，每个goroutine代表相同消费者组中的一个实例。</br>
   2、使用"github.com/segmentio/kafka-go"作为消费者客户端，提供消费kafka消息的SDK。</br>
@@ -446,7 +446,11 @@ root@node3:~/testme#
   如果插入成功，则继续走后续处理流程。</br>
   <b>后续处理流程</b>： 调用API接口向用户推送消息。然后更新DB中该消息状态为已推送。最后提交kafka消息offset。
   </pre>
-
+  ### 其他
+  - 这里注意了优雅关闭处理。</br>
+  - 另外，生产者和消费者可以基于campaign.ID进行独立处理，比如生产者进程1专门处理campaign.ID % 3 == 0的活动，生产者进程2专门处理campaign.ID % 3 == 1的活动..., </br>
+  - 同样的，消费者也可以通过扩容kafka分区数量，同时增加消费者进程数量或者增加worker_count启动参数，来增加并发消费能力。</br>
+  - 如果活动量比较大，可能数据库也需要考虑基于活动ID进行分库分表。
 
 
 
