@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	//"github.com/astaxie/beego/orm"
 	log "github.com/beego/beego/v2/core/logs"
@@ -35,6 +36,7 @@ func main() {
 	topic := flag.String("topic", "campaign", "kafka topic for procuder/consumer accessing")
 	groupID := flag.String("group_id", "group1", "kafka's group id")
 	workerCount := flag.Int("worker_count", 3, "consumer's count for the same group")
+	readTimeMS := flag.Int("read_timeout", 30*1000, "milliseconds to wait for reading messages")
 	flag.Parse()
 
 	// 设置日志信息
@@ -59,6 +61,7 @@ func main() {
 		Brokers: hosts,
 		GroupID: *groupID,
 		Topic:   *topic,
+		ReadBatchTimeout: time.Duration(*readTimeMS) * time.Millisecond,
 	}
 	consumer := internal.NewConsumer(*workerCount, kafkaCfg, fakeDeliveryFunc, "https://delivery-url/")
 
