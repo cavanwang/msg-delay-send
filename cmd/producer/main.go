@@ -12,7 +12,6 @@ import (
 
 	"github.com/astaxie/beego/orm"
 	log "github.com/beego/beego/v2/core/logs"
-	k "github.com/segmentio/kafka-go"
 
 	"github.com/cavanwang/msg-delay-send/internal"
 )
@@ -31,10 +30,13 @@ func main() {
 	maxOpenConn := flag.Int("mysql_open_conn", 100, "mysql max open connection")
 	orm.Debug = true
 
-	// 初始化消费者配置
+	// 初始化生产者配置
 	kafkaHosts := flag.String("kafka_hosts", "127.0.0.1:9092", "kafka's listen address for consumer/producer accessing")
 	topic := flag.String("topic", "campaign", "kafka topic for procuder/consumer accessing")
-	workerCount := flag.Int("worker_count", 3, "how many goroutines to send msgs to kafka concurrently")
+	workerCount := flag.Int("worker_count", 5, "how many goroutines to send msgs to kafka concurrently")
+	connTimeout := flag.Int("conn_timeout", 10*1000, "timeout for connecting to kafka")
+	readWriteTimeout := flag.Int("read_write_timeout", 2*1000, "timeout for reading from or sending to kafka by millisecond")
+	batchSize := flag.Int("batch_size", 50, "number of messages for sending to kafka each time")
 	flag.Parse()
 
 	// 设置日志信息
@@ -59,13 +61,19 @@ func main() {
 
 	// 构建生成者对象
 	hosts := strings.Split(*kafkaHosts, ",")
-	kcfg := k.WriterConfig{
-		Brokers:      hosts,
-		Topic:        *topic,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
+	cfg := internal.ProducerConfig{
+		KafkaReadWriteTimeout: time.Duration(*readWriteTimeout) * time.Millisecond,
+		KafkaConnTimeout:      time.Duration(*connTimeout) * time.Millisecond,
+		KafkaBatchSize:        *batchSize,
+		Topic:                 *topic,
+		Brokers:               hosts,
+		SendKafkaWorkerCount:  *workerCount,
 	}
-	producer := internal.NewProducer(kcfg, *workerCount)
+	producer, err := internal.NewProducer(cfg)
+	if err != nil {
+		log.Error("new producer: ", err)
+		return
+	}
 	// 启动生产者服务
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
@@ -73,14 +81,21 @@ func main() {
 	go func() {
 		defer wg.Done()
 		producer.Produce(ctx)
-		sigCh <- syscall.SIGTERM
+		log.Info("will notify signal exit")
+		select {
+		case sigCh <- syscall.SIGTERM:
+		default:
+		}
+		log.Info("already notified signal exit")
 	}()
 	log.Info("producer starting")
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		<-sigCh
+		log.Info("signal will exit")
 		cancel()
+		log.Info("signal exited")
 	}()
 
 	wg.Wait()

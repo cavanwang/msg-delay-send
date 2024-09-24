@@ -17,15 +17,13 @@ import (
 const (
 	tpl = `{{.Username}} 你好, 我们正在推广一个活动，希望你对其感兴趣，可以点击这个活动链接:
 	https://a.b.c.d/user/{{.PhoneNumber}}
-	如果您对此不感兴趣，可以点击取消按钮关闭订阅。
-	---xyz有限公司 地址: xxxxxxxx
 `
 )
 
 func main() {
 	log.SetFormatter(&log.TextFormatter{
-		DisableColors: true,
-		FullTimestamp: true,
+		DisableColors:   true,
+		FullTimestamp:   true,
 		TimestampFormat: "2006-01-02 15:04:05.000",
 	})
 	log.SetLevel(log.InfoLevel)
@@ -73,7 +71,7 @@ func main() {
 		// 生成用户列表并写入csv文件
 		end := i*1e5 + *recipientCount
 		content := fmt.Sprintf("user%d,%011d", i*1e5, i*1e5)
-		for j := i * 1e5; j < end; j++ {
+		for j := i * 1e5 + 1; j < end; j++ {
 			content += fmt.Sprintf("\nuser%d,%011d", j, j)
 		}
 		if err := os.WriteFile(c.CSVPath, []byte(content), 0666); err != nil {

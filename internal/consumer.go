@@ -83,18 +83,13 @@ func (c *consumerWorker) Consume(ctx context.Context) {
 			}
 			if m.Status == MsgStatusDilivered { // 已经投递，忽略本次操作
 				log.Debug("msg %+v already delivered, ignore the action", dbMsg)
-				continue
+				goto commitKafka
 			}
-			// 状态为投递中(尚未投递)，则需要更新投递时间
+			// 状态为投递中(尚未投递),需要再次投递
 			dbMsg = m
-			dbMsg.UpdateTime = time.Now()
-			if err := UpdateMsg(dbMsg); err != nil {
-				log.Error("update message to %+v error: %v", dbMsg, err)
-				continue
-			}
 		}
 
-		// 调用发送函数投递该广告消息
+		// 调用发送函数投递该消息
 		if err := c.deliveryFunc(kmsg.Msg, c.deliverURL); err != nil {
 			log.Error("deliver msg %s to %s error: %v", kmsg.Msg, c.deliverURL, err)
 			continue
@@ -109,8 +104,10 @@ func (c *consumerWorker) Consume(ctx context.Context) {
 		}
 
 		// 向kafka完成消息提交
+		commitKafka: 
 		if err := c.r.CommitMessages(ctx, msg); err != nil {
 			log.Error("CommitMessages with %+v error: %v", msg, err)
+			continue
 		}
 		log.Info("message %+v delivered successfully", dbMsg)
 	}

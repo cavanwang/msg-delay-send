@@ -34,6 +34,7 @@ func main() {
 	kafkaHosts := flag.String("kafka_hosts", "localhost:9092", "kafka's listen address for consumer/producer accessing")
 	topic := flag.String("topic", "campaign", "kafka topic for procuder/consumer accessing")
 	groupID := flag.String("group_id", "group1", "kafka's group id")
+	workerCount := flag.Int("worker_count", 3, "consumer's count for the same group")
 	flag.Parse()
 
 	// 设置日志信息
@@ -59,7 +60,6 @@ func main() {
 		GroupID: *groupID,
 		Topic:   *topic,
 	}
-	workerCount := flag.Int("worker_count", 3, "consumer's count for the same group")
 	consumer := internal.NewConsumer(*workerCount, kafkaCfg, fakeDeliveryFunc, "https://delivery-url/")
 
 	// 注册信号监听，优雅关闭
@@ -75,7 +75,11 @@ func main() {
 	go func() {
 		defer wg.Done()
 		consumer.Consume(ctx)
-		sigCh <- syscall.SIGTERM
+		select {
+		case sigCh <- syscall.SIGTERM:
+		default:
+		}
+		log.Info("consumer exited")
 	}()
 	log.Info("consumer started")
 
@@ -84,6 +88,7 @@ func main() {
 		defer wg.Done()
 		<-sigCh
 		cancel()
+		log.Info("signal handler exited")
 	}()
 	wg.Wait()
 	log.Info("consumer exited")

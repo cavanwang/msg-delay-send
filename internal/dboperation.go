@@ -129,3 +129,15 @@ func UpdateMsg(msg Message) error {
 func InsertCampaign(c Campaign) (int64, error) {
 	return globalOrm.Insert(&c)
 }
+
+func ListMsgPhoneNums(campaignID int64) (phoneNumbers map[string]struct{}, err error) {
+	var msgs []Message
+	if _, err = globalOrm.QueryTable(&Message{}).Filter("CampaignID", campaignID).All(&msgs, "PhoneNumber"); err != nil {
+		return nil, err
+	}
+	phoneNumbers = make(map[string]struct{}, len(msgs))
+	for _, msg:= range msgs {
+		phoneNumbers[msg.PhoneNumber] = struct{}{}
+	}
+	return phoneNumbers, nil
+}
