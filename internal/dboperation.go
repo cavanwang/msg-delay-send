@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/astaxie/beego/orm"
-	_ "github.com/go-sql-driver/mysql"
 	log "github.com/beego/beego/v2/core/logs"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -49,6 +49,7 @@ type Message struct {
 	PhoneNumber string        `orm:"column(phone_number);size(24)"`
 	Status      MessageStatus `orm:"column(status)"`
 	UpdateTime  time.Time     `orm:"column(update_time)"`
+	RandID      int64         `orm:"column(rand_id)"`
 }
 
 func (u *Message) TableUnique() [][]string {
@@ -136,7 +137,7 @@ func ListMsgPhoneNums(campaignID int64) (phoneNumbers map[string]struct{}, err e
 		return nil, err
 	}
 	phoneNumbers = make(map[string]struct{}, len(msgs))
-	for _, msg:= range msgs {
+	for _, msg := range msgs {
 		phoneNumbers[msg.PhoneNumber] = struct{}{}
 	}
 	return phoneNumbers, nil

@@ -41,7 +41,9 @@ type KafkaMsg struct {
 	CampaignID  int64
 	Username    string
 	PhoneNumber string
-	Msg         string
+	// 发送者设置的纳秒级时间戳，与message表中的RandID对比，如果不同表示当前消息是生产者重发的
+	RandID int64
+	Msg    string
 }
 
 type ProducerConfig struct {
@@ -130,7 +132,7 @@ func (p *Producer) handleOneCampaign(ctx context.Context, c Campaign) {
 		log.Error("parse template campaign id=%v tpl=%s error=%v", c.ID, c.Template, err)
 		return
 	}
-	
+
 	for _, r := range csvRecords {
 		// 跳过DB已经被消费者标记过的消息
 		if _, ok := phones[r.PhoneNumber]; ok {
@@ -142,7 +144,7 @@ func (p *Producer) handleOneCampaign(ctx context.Context, c Campaign) {
 			log.Error("parse template from %s with %+v", c.Template, r)
 			return
 		}
-		msgs = append(msgs, KafkaMsg{CampaignID: c.ID, Username: r.Username, PhoneNumber: r.PhoneNumber, Msg: buf.String()})
+		msgs = append(msgs, KafkaMsg{CampaignID: c.ID, RandID: time.Now().UnixNano(), Username: r.Username, PhoneNumber: r.PhoneNumber, Msg: buf.String()})
 	}
 	log.Debug("campaign=%v finished to read csv with %d records", c.ID, len(msgs))
 
@@ -185,7 +187,7 @@ func (p *Producer) produceOneCampaign(ctx context.Context, msgs []pkg.KafkaMsg) 
 			break
 		}
 		cost := time.Since(start)
-		msgsIndexEnd = pkg.Min(i+p.config.KafkaBatchSize, len(msgs))
+		msgsIndexEnd = min(i+p.config.KafkaBatchSize, len(msgs))
 
 		// 启动协程发送本消息
 		wg.Add(1)

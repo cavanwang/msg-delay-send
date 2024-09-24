@@ -85,6 +85,9 @@ func (c *consumerWorker) Consume(ctx context.Context) {
 				log.Debug("msg %+v already delivered, ignore the action", dbMsg)
 				goto commitKafka
 			}
+			if m.RandID != dbMsg.RandID { // 生产者重发的消息，忽略掉
+				goto commitKafka
+			}
 			// 状态为投递中(尚未投递),需要再次投递
 			dbMsg = m
 		}
