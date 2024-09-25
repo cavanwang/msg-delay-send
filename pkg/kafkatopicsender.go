@@ -113,6 +113,10 @@ func (k *KafkaProducer) PostBatchMessages(msgs ToSendMsg) {
 	k.toSend <- msgs
 }
 
+func(k *KafkaProducer) SendMessages(campaignID int64, msgs []KafkaMsg) error {
+	return k.sendMessages(campaignID, msgs)
+}
+
 func (k *KafkaProducer) sendMessages(campaignID int64, msgs []KafkaMsg) error {
 	// 如果上次重连失败继续尝试重连
 	if err := k.reconnect(false); err != nil {

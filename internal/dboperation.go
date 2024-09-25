@@ -44,7 +44,7 @@ type Recipient struct {
 }
 
 type Message struct {
-	ID          int           `orm:"column(id);auto;pk"`
+	ID          int64         `orm:"column(id);auto;pk"`
 	CampaignID  int64         `orm:"column(campaign_id)"`
 	PhoneNumber string        `orm:"column(phone_number);size(24)"`
 	Status      MessageStatus `orm:"column(status)"`
