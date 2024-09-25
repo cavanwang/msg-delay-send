@@ -6,11 +6,9 @@ import (
 	"errors"
 	"html/template"
 	"io"
-	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -23,6 +21,8 @@ const (
 	batchCampaignCount = 5
 	// 如果当前没有待发送的活动则睡眠一段时间
 	sleepSecondsWhenNoDelivery = 1
+	// kafka sender接收发送消息的channel长度
+	senderChanLen = 100
 )
 
 type Producer struct {
@@ -69,6 +69,17 @@ func NewProducer(config ProducerConfig) (*Producer, error) {
 
 func (p *Producer) Produce(ctx context.Context) {
 	log.Info("produce started with config=%+v", p.config)
+
+	// 启动全部kafka sender
+	wg := sync.WaitGroup{}
+	for _, sender := range p.senders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sender.Run(ctx)
+		}()
+	}
+	defer wg.Wait()
 
 	for {
 		select {
@@ -153,7 +164,7 @@ func (p *Producer) handleOneCampaign(ctx context.Context, c Campaign) {
 	for _, msg := range msgs {
 		kmsgs = append(kmsgs, pkg.ToJsonBytes(msg))
 	}
-	if ok := p.produceOneCampaign(ctx, kmsgs); !ok {
+	if ok := p.produceOneCampaign(ctx, c.ID, kmsgs); !ok {
 		log.Error("produceOneCampaign for %v failed", c.ID)
 		return
 	}
@@ -167,50 +178,48 @@ func (p *Producer) handleOneCampaign(ctx context.Context, c Campaign) {
 	log.Info("handleOneCampaign ok with id=%v cost=%dms", c.ID, time.Since(startTime)/time.Millisecond)
 }
 
-func (p *Producer) produceOneCampaign(ctx context.Context, msgs []pkg.KafkaMsg) (ok bool) {
+func (p *Producer) produceOneCampaign(ctx context.Context, campaignID int64, msgs []pkg.KafkaMsg) (ok bool) {
 	if len(msgs) == 0 {
 		return true
 	}
+
+	// 异步发送全部该活动的消息
 	startTime := time.Now()
-
-	// 向所有workers发送全部消息
-	var notOk atomic.Bool
-	wg := sync.WaitGroup{}
-	i := 0
-	msgsIndexEnd := 0
-	for ; i < len(msgs); i = msgsIndexEnd {
-		// 寻找并抢占空闲发送者
-		start := time.Now()
-		index := p.findIdleSender(ctx)
-		if index < 0 {
-			notOk.Store(true)
-			break
+	sentOkNotify := make(chan int, 1)
+	ctxDone := false
+	safeClose := pkg.NewSafeClose()
+	defer safeClose.Close(sentOkNotify)
+	// 启动异步协程把全部消息均匀委派给不同的kafka sender。
+	go func() {
+		var next int
+		for i := 0; i < len(msgs) && !ctxDone; i = next {
+			next = min(i+p.config.KafkaBatchSize, len(msgs))
+			sender := p.senders[((i+p.config.KafkaBatchSize-1)/p.config.KafkaBatchSize)%len(p.senders)]
+			log.Debug("%d: will post [%d:%d]/%d mesages to sender", campaignID, i, next, len(msgs))
+			sender.PostBatchMessages(pkg.ToSendMsg{
+				Msgs:         msgs[i:next],
+				SentOkNotify: sentOkNotify,
+				SafeClose:    safeClose,
+				CampaignID:   campaignID,
+			})
 		}
-		cost := time.Since(start)
-		msgsIndexEnd = min(i+p.config.KafkaBatchSize, len(msgs))
+	}()
 
-		// 启动协程发送本消息
-		wg.Add(1)
-		go func(index int, msgs []pkg.KafkaMsg, cost time.Duration) {
-			defer wg.Done()
-			defer p.senders[index].ReleaseSender() // 发送完毕解除占用
-			// 开始同步发送一批消息
-			startTime := time.Now()
-			if err := p.senders[index].SendMessages(msgs); err != nil {
-				notOk.Store(true)
-			}
-			log.Info("sent %d messages cost=%dms findidleCost=%dms", len(msgs), time.Since(startTime)/time.Millisecond, cost/time.Millisecond)
-		}(index, msgs[i:msgsIndexEnd], cost)
+	// 等待kafka sender反馈成功发送的数量
+	sentMsgCount := 0
+	recvTimes := (len(msgs) + p.config.KafkaBatchSize - 1) / p.config.KafkaBatchSize
+	for ; recvTimes > 0; recvTimes-- {
 		select {
+		case sentCount := <-sentOkNotify:
+			sentMsgCount += sentCount
+			log.Debug("campaign %d recv kafka sender response: sentok=%t", campaignID, sentCount)
 		case <-ctx.Done():
-			break
-		default:
+			ctxDone = true
+			return
 		}
 	}
-	// 等待该活动的全部消息发送完毕
-	wg.Wait()
-	log.Info("sent %d messages cost=%dms", len(msgs), time.Since(startTime)/time.Millisecond)
-	return !notOk.Load() && i == len(msgs)
+	log.Info("%d: sent %d/%d messages cost=%dms", campaignID, sentMsgCount, len(msgs), time.Since(startTime)/time.Millisecond)
+	return sentMsgCount == len(msgs)
 }
 
 func (p *Producer) readCSV(fname string) ([]CSVRecord, error) {
@@ -274,7 +283,7 @@ func (p *Producer) initKafkaSenders() error {
 			config.Net.DialTimeout = p.config.KafkaConnTimeout
 			config.Net.ReadTimeout = p.config.KafkaReadWriteTimeout
 			config.Net.WriteTimeout = p.config.KafkaReadWriteTimeout
-			worker, err := pkg.NewKafkaProducer(p.config.Brokers, p.config.Topic, config, p.config.KafkaBatchSize)
+			worker, err := pkg.NewKafkaProducer(int64(i), p.config.Brokers, p.config.Topic, config, p.config.KafkaBatchSize, senderChanLen)
 
 			lk.Lock()
 			defer lk.Unlock()
@@ -290,29 +299,4 @@ func (p *Producer) initKafkaSenders() error {
 		return errors.New(strings.Join(errMsgs, ";"))
 	}
 	return nil
-}
-
-func (p *Producer) findIdleSender(ctx context.Context) (index int) {
-	start := int(rand.Uint() % uint(len(p.senders)))
-
-	index = -1
-	for index == -1 {
-		for i := 0; i < len(p.senders); i++ {
-			index = (i + start) % len(p.senders)
-			if p.senders[index].GrabSender() {
-				break
-			}
-			index = -1
-		}
-		select {
-		case <-ctx.Done():
-			return -1
-		default:
-		}
-		if index == -1 {
-			time.Sleep(time.Millisecond)
-		}
-	}
-
-	return index
 }
