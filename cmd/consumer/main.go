@@ -77,7 +77,9 @@ func main() {
 	// 等待协程优雅退出
 	go func() {
 		defer wg.Done()
-		consumer.Consume(ctx)
+		if err := consumer.Consume(ctx); err != nil {
+			log.Error("consumer stopped with error=", err)
+		}
 		select {
 		case sigCh <- syscall.SIGTERM:
 		default:

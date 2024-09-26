@@ -31,6 +31,7 @@ type consumerReadWorker struct {
 	deliverURL   string
 	sender       *pkg.KafkaProducer
 	id           int64
+	notFirstFetch bool
 }
 
 type DeliveryFunc func(msg string, url string) error
@@ -83,14 +84,18 @@ func (c *consumerReadWorker) Consume(ctx context.Context) {
 		// 批量从kafka读取n条消息
 		msgs, err := c.batchFetchMessages(ctx)
 		if err != nil {
-			log.Error("%d: batchFetchMessages error: ", c.id, err)
+			log.Error("%d: batchFetchMessages error: %v", c.id, err)
 			continue
 		}
 		if len(msgs) == 0 {
+			log.Debug("%d: no messages fetched, continue", c.id)
 			continue
 		}
 		// 并发处理n条消息
 		log.Info("%d: will handle %d msgs", c.id, len(msgs))
+		if len(msgs) == 1 {
+			log.Info("the one msg is: %s", msgs[0].Value)
+		}
 		failedMsgs := c.batchConsumeMsgs(ctx, msgs)
 		if len(failedMsgs) == 0 {
 			log.Info("batchConsumeMsgs %d msgs ok", len(msgs))
@@ -98,6 +103,7 @@ func (c *consumerReadWorker) Consume(ctx context.Context) {
 		}
 
 		// 失败的消息需要重新投递回去
+		log.Info("%d: will re-send %d failed messages", c.id, len(failedMsgs))
 		var kmsgs []pkg.KafkaMsg
 		for _, m := range failedMsgs {
 			kmsgs = append(kmsgs, m.Value)
@@ -190,12 +196,26 @@ func (c *consumerReadWorker) handleOneMsg(msg k.Message) error {
 }
 
 func (c *consumerReadWorker) batchFetchMessages(ctx context.Context) (msgs []k.Message, err error) {
-	startTime := time.Now()
-
-	for i := 0; i < maxBatchMsgCount && time.Since(startTime) < maxBatchMsgTime; i++ {
+	// 首次fetch会包含连接动作，耗时长，需要死等
+	if !c.notFirstFetch {
 		msg, err := c.r.FetchMessage(ctx)
 		if err != nil {
 			return nil, err
+		}
+		c.notFirstFetch = true
+		return []k.Message{msg}, nil
+	}
+
+	// 批量获取一批消息
+	childCtx, cancel := context.WithDeadline(ctx, time.Now().Add(maxBatchMsgTime))
+	defer cancel()
+	for i := 0; i < maxBatchMsgCount; i++ {
+		msg, err := c.r.FetchMessage(childCtx)
+		if err != nil {
+			if childCtx.Err() == nil {
+				return nil, err
+			}
+			continue
 		}
 		msgs = append(msgs, msg)
 	}
